@@ -685,10 +685,16 @@ async function main() {
                 { headers: { Authorization: `Bearer ${accessToken}` } }
               );
               const searchJson = await searchResp.json() as { playlists?: { items?: Array<{ uri: string; name: string }> } };
-              const items = (searchJson.playlists?.items || []).filter(i => i && i.uri);
-              if (items.length > 0) {
-                // Pick a random playlist from the top results for variety
-                const picked = items[Math.floor(Math.random() * items.length)];
+              const allItems = (searchJson.playlists?.items || []).filter(i => i && i.uri);
+              if (allItems.length > 0) {
+                // Try to pick a playlist whose name contains the key query words (for relevance)
+                const queryWords = params.search_query!.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+                const relevant = allItems.filter(pl =>
+                  queryWords.every(word => pl.name.toLowerCase().includes(word))
+                );
+                const pool = relevant.length > 0 ? relevant : allItems;
+                // Pick a random playlist from the filtered pool for variety
+                const picked = pool[Math.floor(Math.random() * pool.length)];
                 contentId = picked.uri;
               }
             }
