@@ -821,6 +821,129 @@ async function main() {
   server.addTool(playMediaTool);
   tools.push(playMediaTool);
 
+  // Add Spotify control tool (pause, resume, next, prev, volume, search tracks)
+  const spotifyTool = {
+    name: 'spotify',
+    description: 'Control Spotify playback (pause, resume, next, previous, volume, search and play a track by name) via Spotify Web API. Use this for all Spotify actions.',
+    parameters: z.object({
+      action: z.enum(['pause', 'resume', 'next', 'previous', 'volume', 'search_and_play', 'now_playing'])
+        .describe('Action to perform'),
+      device_name: z.string().optional()
+        .describe('Spotify Connect device name (e.g. "Pioneer VSX-832 ED822D"). Defaults to active device.'),
+      volume_percent: z.number().min(0).max(100).optional()
+        .describe('Volume level 0-100 (used with action="volume")'),
+      query: z.string().optional()
+        .describe('Search query for a track (used with action="search_and_play", e.g. "Mattafix Living Darfur")'),
+    }),
+    execute: async (params: { action: string; device_name?: string; volume_percent?: number; query?: string }) => {
+      try {
+        const spotifyCtx = await getSpotifyAccessToken();
+        if (!spotifyCtx) throw new Error('Cannot get Spotify access token from HA storage');
+        const { accessToken, deviceMap } = spotifyCtx;
+
+        // Resolve device ID
+        let deviceId: string | undefined;
+        if (params.device_name) {
+          deviceId = deviceMap[params.device_name];
+          if (!deviceId) {
+            // Fuzzy match
+            const key = Object.keys(deviceMap).find(k => k.toLowerCase().includes(params.device_name!.toLowerCase()));
+            if (key) deviceId = deviceMap[key];
+          }
+        }
+        if (!deviceId) {
+          // Use first available device
+          deviceId = Object.values(deviceMap)[0];
+        }
+
+        const deviceQs = deviceId ? `?device_id=${deviceId}` : '';
+
+        switch (params.action) {
+          case 'pause': {
+            await fetch(`https://api.spotify.com/v1/me/player/pause${deviceQs}`, {
+              method: 'PUT', headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            return { success: true, message: 'Spotify paused' };
+          }
+          case 'resume': {
+            await fetch(`https://api.spotify.com/v1/me/player/play${deviceQs}`, {
+              method: 'PUT', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({}),
+            });
+            return { success: true, message: 'Spotify resumed' };
+          }
+          case 'next': {
+            await fetch(`https://api.spotify.com/v1/me/player/next${deviceQs}`, {
+              method: 'POST', headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            return { success: true, message: 'Skipped to next track' };
+          }
+          case 'previous': {
+            await fetch(`https://api.spotify.com/v1/me/player/previous${deviceQs}`, {
+              method: 'POST', headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            return { success: true, message: 'Went to previous track' };
+          }
+          case 'volume': {
+            if (params.volume_percent === undefined) throw new Error('volume_percent is required for volume action');
+            await fetch(`https://api.spotify.com/v1/me/player/volume?volume_percent=${params.volume_percent}${deviceId ? `&device_id=${deviceId}` : ''}`, {
+              method: 'PUT', headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            return { success: true, message: `Volume set to ${params.volume_percent}%` };
+          }
+          case 'search_and_play': {
+            if (!params.query) throw new Error('query is required for search_and_play action');
+            const searchResp = await fetch(
+              `https://api.spotify.com/v1/search?q=${encodeURIComponent(params.query)}&type=track&limit=5&market=CZ`,
+              { headers: { Authorization: `Bearer ${accessToken}` } }
+            );
+            const searchJson = await searchResp.json() as { tracks?: { items?: Array<{ uri: string; name: string; artists: Array<{ name: string }> }> } };
+            const track = searchJson.tracks?.items?.[0];
+            if (!track) throw new Error(`No track found for query: ${params.query}`);
+            await fetch(`https://api.spotify.com/v1/me/player/play${deviceQs}`, {
+              method: 'PUT',
+              headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uris: [track.uri], position_ms: 0 }),
+            });
+            return {
+              success: true,
+              message: `Playing: ${track.name} - ${track.artists.map(a => a.name).join(', ')}`,
+              track: track.name,
+              artist: track.artists.map(a => a.name).join(', '),
+              uri: track.uri,
+            };
+          }
+          case 'now_playing': {
+            const stateResp = await fetch('https://api.spotify.com/v1/me/player', {
+              headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            const stateJson = await stateResp.json() as Record<string, unknown>;
+            const item = (stateJson.item as Record<string, unknown>) || {};
+            const artists = ((item.artists as Array<{ name: string }>) || []).map(a => a.name).join(', ');
+            return {
+              success: true,
+              is_playing: stateJson.is_playing,
+              track: (item.name as string) || null,
+              artist: artists || null,
+              device: (stateJson.device as Record<string, string>)?.name ?? null,
+              shuffle: stateJson.shuffle_state,
+              volume: (stateJson.device as Record<string, unknown>)?.volume_percent ?? null,
+            };
+          }
+          default:
+            throw new Error(`Unknown action: ${params.action}`);
+        }
+      } catch (error) {
+        return {
+          success: false,
+          message: error instanceof Error ? error.message : 'Unknown error occurred',
+        };
+      }
+    }
+  };
+  server.addTool(spotifyTool);
+  tools.push(spotifyTool);
+
   // Add the history tool
   const historyTool = {
     name: 'get_history',
