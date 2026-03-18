@@ -681,13 +681,15 @@ async function main() {
             let contentId = params.media_content_id;
             if (params.search_query) {
               const searchResp = await fetch(
-                `https://api.spotify.com/v1/search?q=${encodeURIComponent(params.search_query)}&type=playlist&limit=1&market=CZ`,
+                `https://api.spotify.com/v1/search?q=${encodeURIComponent(params.search_query)}&type=playlist&limit=10&market=CZ`,
                 { headers: { Authorization: `Bearer ${accessToken}` } }
               );
               const searchJson = await searchResp.json() as { playlists?: { items?: Array<{ uri: string; name: string }> } };
-              const found = searchJson.playlists?.items?.[0];
-              if (found) {
-                contentId = found.uri;
+              const items = (searchJson.playlists?.items || []).filter(i => i && i.uri);
+              if (items.length > 0) {
+                // Pick a random playlist from the top results for variety
+                const picked = items[Math.floor(Math.random() * items.length)];
+                contentId = picked.uri;
               }
             }
 
